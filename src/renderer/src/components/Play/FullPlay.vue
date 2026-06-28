@@ -12,7 +12,8 @@ import {
   Fullscreen1Icon,
   FullscreenExit1Icon,
   ChevronDownIcon,
-  PenBallIcon
+  PenBallIcon,
+  ControlPlatformIcon
 } from 'tdesign-icons-vue-next'
 import _ from 'lodash'
 import { storeToRefs } from 'pinia'
@@ -29,6 +30,7 @@ import CommentsOverlay from './CommentsOverlay.vue'
 import LyricCopyOverlay from './LyricCopyOverlay.vue'
 import ListenTogetherOverlay from './ListenTogetherOverlay.vue'
 import LtDanmakuLayer from '@renderer/components/ListenTogether/LtDanmakuLayer.vue'
+import FxConsole from './FxConsole.vue'
 import { useLyricExtrasStore } from '@renderer/store/LyricExtras'
 
 const playSetting = usePlaySettingStore()
@@ -38,6 +40,7 @@ const globalPlayStatus = useGlobalPlayStatusStore()
 const { player } = storeToRefs(globalPlayStatus)
 const lyricExtrasStore = useLyricExtrasStore()
 const showSettings = ref(false)
+const showFxConsole = ref(false)
 
 const lyricFontSize = computed(() => {
   const rate = settingsStore.settings.FullPlayLyricFontRate || 1.0
@@ -285,6 +288,7 @@ const resetIdleTimer = () => {
         props.show &&
         playSetting.getAutoHideBottom &&
         !showSettings.value &&
+        !showFxConsole.value &&
         !props.disableAutoHide
       ) {
         isIdle.value = true
@@ -815,8 +819,9 @@ watch(() => [props.songInfo, props.show], checkOverflow, { immediate: true })
 //   }
 // })
 
-// 点击外部关闭设置面板
+// 点击外部关闭设置面板 / FX 控制台
 const floatActionRef = ref<HTMLElement | null>(null)
+const fxConsoleRef = ref<HTMLElement | null>(null)
 const handleClickOutside = (event: MouseEvent) => {
   if (
     showSettings.value &&
@@ -824,6 +829,13 @@ const handleClickOutside = (event: MouseEvent) => {
     !floatActionRef.value.contains(event.target as Node)
   ) {
     showSettings.value = false
+  }
+  if (
+    showFxConsole.value &&
+    fxConsoleRef.value &&
+    !fxConsoleRef.value.contains(event.target as Node)
+  ) {
+    showFxConsole.value = false
   }
 }
 
@@ -905,6 +917,23 @@ onUnmounted(() => {
     <ParticleBackground v-if="props.show && playSetting.getParticleBg" :show="true" />
     <!-- 3D 歌词舞台 (移植自 Mineradio)：仅在粒子背景开启且全屏时渲染 -->
     <LyricStage v-if="props.show && playSetting.getParticleBg && playSetting.getLyricStage" :show="true" />
+    <!-- DIY 视觉控制台 (移植自 Mineradio)：仅在粒子背景开启且全屏时显示 -->
+    <div
+      v-if="props.show && playSetting.getParticleBg"
+      ref="fxConsoleRef"
+      class="fx-console-anchor"
+    >
+      <t-tooltip content="视觉控制台" placement="left">
+        <button
+          class="fx-trigger-btn"
+          :class="{ idle: isIdle, active: showFxConsole }"
+          @click="showFxConsole = !showFxConsole"
+        >
+          <ControlPlatformIcon class="icon" />
+        </button>
+      </t-tooltip>
+      <FxConsole v-model:visible="showFxConsole" />
+    </div>
     <div v-if="showFestivalEffects" ref="festivalOverlay" class="festival-overlay"></div>
     <!-- 全屏按钮 -->
     <button
@@ -1844,6 +1873,57 @@ onUnmounted(() => {
 .fade-up-leave-to {
   opacity: 0;
   transform: translateY(20px) scale(0.95);
+}
+
+// === DIY 视觉控制台 悬浮触发按钮 (移植自 Mineradio) ===
+.fx-console-anchor {
+  position: absolute;
+  z-index: 50;
+  right: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  transition:
+    opacity 0.5s ease,
+    transform 0.5s ease;
+  &.idle,
+  .fx-trigger-btn.idle {
+    opacity: 0;
+    transform: translateY(-50%) translateX(20px);
+    pointer-events: none;
+  }
+}
+
+.fx-trigger-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+
+  .icon {
+    font-size: 22px;
+  }
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.22);
+    transform: scale(1.08);
+  }
+  &.active {
+    background: rgba(255, 255, 255, 0.28);
+    border-color: rgba(255, 255, 255, 0.7);
+    box-shadow:
+      0 8px 24px rgba(0, 0, 0, 0.35),
+      0 0 18px v-bind(lightMainColor);
+  }
 }
 
 @keyframes rotateRecord {

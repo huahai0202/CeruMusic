@@ -27,6 +27,7 @@ import { storeToRefs } from 'pinia'
 import { ControlAudioStore } from '@renderer/store/ControlAudio'
 import { useGlobalPlayStatusStore } from '@renderer/store/GlobalPlayStatus'
 import { playSetting } from '@renderer/store/playSetting'
+import { useMineradioFxStore } from '@renderer/store/mineradioFx'
 import audioManager from '@renderer/utils/audio/audioManager'
 import {
   starRiverVertexShader,
@@ -55,6 +56,7 @@ const { Audio } = storeToRefs(controlAudio)
 const globalPlayStatus = useGlobalPlayStatusStore()
 const { player } = storeToRefs(globalPlayStatus)
 const playSettingStore = playSetting()
+const fxStore = useMineradioFxStore()
 
 // ============================================================
 //  类型定义
@@ -511,10 +513,10 @@ function buildLyricMesh(
       uOpacity: { value: 0 },
       uFeather: { value: 0.055 },
       uSolar: { value: 0 },
-      uBaseColor: { value: new THREE.Color('#7fa8e8') },
-      uHiColor: { value: new THREE.Color('#ffffff') },
-      uGlowColor: { value: new THREE.Color('#4d8eff') },
-      uSolarColor: { value: new THREE.Color('#ffc266') }
+      uBaseColor: { value: new THREE.Color(fxStore.lyricBaseColor) },
+      uHiColor: { value: new THREE.Color(fxStore.lyricHiColor) },
+      uGlowColor: { value: new THREE.Color(fxStore.lyricGlowColor) },
+      uSolarColor: { value: new THREE.Color(fxStore.lyricSolarColor) }
     },
     vertexShader: lyricTextVertexShader,
     fragmentShader: lyricTextFragmentShader,
@@ -548,7 +550,7 @@ function buildLyricMesh(
   const sparkMat = new THREE.ShaderMaterial({
     uniforms: {
       uMap: { value: sparkDotTex },
-      uColor: { value: new THREE.Color('#ffe9b8') },
+      uColor: { value: new THREE.Color(fxStore.lyricSparkColor) },
       uOpacity: { value: 0 },
       uSize: { value: 0.045 },
       uPixel: { value: renderer ? renderer.getPixelRatio() : 1 }
@@ -791,6 +793,12 @@ function updateLyricMeshes() {
   const solarBloom = 0.18 + glowBreath * 0.16 + musicBloom * 0.9 + beatGlow * 1.18
   const highBloom = clamp01(solarBloom * 0.6)
 
+  // fxStore 歌词舞台参数 (每帧读取保证即时生效)
+  const glowMul = Math.max(0, fxStore.lyricGlow)
+  const scaleMul = Math.max(0.2, fxStore.lyricScale)
+  const posX = fxStore.lyricX
+  const posY = fxStore.lyricY
+
   // 光晕跟拍偏移
   const glowFollowX = beatCam.thetaKick * 0.15
   const glowFollowY = -beatCam.phiKick * 0.15
@@ -802,7 +810,7 @@ function updateLyricMeshes() {
 
     const op = activeEntry.fadeOpacity
     activeEntry.sunMat.opacity = solarBloom * op
-    activeEntry.glowMat.opacity = (0.3 + highBloom * 0.5) * op
+    activeEntry.glowMat.opacity = (0.3 + highBloom * 0.5) * op * glowMul * 2
     activeEntry.readabilityMat.opacity = 0.6 * op
     activeEntry.textMat.uniforms.uOpacity.value = op
     activeEntry.textMat.uniforms.uSolar.value = solarBloom * 0.5
@@ -814,8 +822,12 @@ function updateLyricMeshes() {
     activeEntry.sunMesh.position.x = glowFollowX * 0.6
     activeEntry.sunMesh.position.y = glowFollowY * 0.6
 
-    // 节拍缩放
-    const scale = 1 + beatPulse * 0.04
+    // 歌词位置 (用户自定义 + 跟拍偏移)
+    activeEntry.group.position.x = posX
+    activeEntry.group.position.y = posY
+
+    // 节拍缩放 × fx.lyricScale
+    const scale = (1 + beatPulse * 0.04) * scaleMul
     activeEntry.group.scale.setScalar(scale)
   }
 
@@ -830,15 +842,31 @@ function updateLyricMeshes() {
     } else {
       const op = entry.fadeOpacity
       entry.sunMat.opacity = solarBloom * op * 0.5
-      entry.glowMat.opacity = (0.3 + highBloom * 0.5) * op * 0.5
+      entry.glowMat.opacity = (0.3 + highBloom * 0.5) * op * 0.5 * glowMul * 2
       entry.readabilityMat.opacity = 0.6 * op * 0.5
       entry.textMat.uniforms.uOpacity.value = op * 0.5
       entry.sparkMat.uniforms.uOpacity.value = (0.4 + highBloom * 0.4) * op * 0.5
 
       // 淡出时缩小
-      const scale = 1 + beatPulse * 0.04 - (1 - op) * 0.1
-      entry.group.scale.setScalar(Math.max(0.5, scale))
+      const scale = (1 + beatPulse * 0.04 - (1 - op) * 0.1) * scaleMul
+      entry.group.scale.setScalar(Math.max(0.1, scale))
     }
+  }
+}
+
+// ============================================================
+//  应用歌词色彩 (fxStore 颜色变化时调用, 不重建 mesh)
+// ============================================================
+function applyLyricColors() {
+  const targets: LyricMeshEntry[] = []
+  if (activeEntry) targets.push(activeEntry)
+  for (const e of fadingEntries) targets.push(e)
+  for (const entry of targets) {
+    entry.textMat.uniforms.uBaseColor.value.set(fxStore.lyricBaseColor)
+    entry.textMat.uniforms.uHiColor.value.set(fxStore.lyricHiColor)
+    entry.textMat.uniforms.uGlowColor.value.set(fxStore.lyricGlowColor)
+    entry.textMat.uniforms.uSolarColor.value.set(fxStore.lyricSolarColor)
+    entry.sparkMat.uniforms.uColor.value.set(fxStore.lyricSparkColor)
   }
 }
 
@@ -1029,6 +1057,17 @@ watch(
       beatCam.lastAt = -10
     }
   }
+)
+
+// ============================================================
+//  Watch: fxStore 歌词色彩变化 (实时应用到已有 mesh)
+// ============================================================
+watch(
+  () => [
+    fxStore.lyricBaseColor, fxStore.lyricHiColor,
+    fxStore.lyricGlowColor, fxStore.lyricSolarColor, fxStore.lyricSparkColor
+  ],
+  () => applyLyricColors()
 )
 
 // ============================================================

@@ -18,23 +18,7 @@
   - 由 playSetting.particleBg 控制开关
 -->
 <template>
-  <div ref="containerRef" class="particle-bg-container">
-    <!-- 预设切换器 -->
-    <Transition name="preset-fade">
-      <div v-if="show && presetBarVisible" class="preset-switcher" @click.stop>
-        <button
-          v-for="p in presetList"
-          :key="p.id"
-          class="preset-btn"
-          :class="{ active: currentPreset === p.id }"
-          :title="p.desc"
-          @click="setPreset(p.id)"
-        >
-          {{ p.label }}
-        </button>
-      </div>
-    </Transition>
-  </div>
+  <div ref="containerRef" class="particle-bg-container" />
 </template>
 
 <script lang="ts" setup>
@@ -43,6 +27,7 @@ import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ControlAudioStore } from '@renderer/store/ControlAudio'
 import { useGlobalPlayStatusStore } from '@renderer/store/GlobalPlayStatus'
+import { useMineradioFxStore } from '@renderer/store/mineradioFx'
 import audioManager from '@renderer/utils/audio/audioManager'
 import {
   particleVertexShader,
@@ -72,6 +57,7 @@ const controlAudio = ControlAudioStore()
 const { Audio } = storeToRefs(controlAudio)
 const globalPlayStatus = useGlobalPlayStatusStore()
 const { player } = storeToRefs(globalPlayStatus)
+const fxStore = useMineradioFxStore()
 
 // ============================================================
 //  常量 & 工具
@@ -152,24 +138,11 @@ let prevTime = 0
 let disposed = false
 
 // ============================================================
-//  可视参数 (fx) — 对应 Mineradio 的 fxDefaults
+//  可视参数 (fx) — 来自 mineradioFx store
+//  持久化、与 FxConsole 共享; Pinia option store 把 state 暴露为实例属性,
+//  故 fx.intensity / fx.preset 等读取即 store 读取 (响应式)
 // ============================================================
-const fx = {
-  preset: 0,
-  intensity: 0.85,
-  depth: 1.0,
-  point: 1.0,
-  speed: 1.0,
-  twist: 0,
-  color: 1.1,
-  scatter: 0,
-  bgFade: 0.2,
-  bloom: true,
-  bloomStrength: 0.62,
-  edge: false,
-  cinema: true,
-  cinemaShake: 1.0
-}
+const fx = fxStore
 
 // ============================================================
 //  相机轨道系统
@@ -265,9 +238,9 @@ const presetTransition = {
 // ============================================================
 //  响应式状态
 // ============================================================
-const currentPreset = ref(0)
-const presetBarVisible = ref(true)
-let presetBarTimer: ReturnType<typeof setTimeout> | null = null
+// 预设切换由 FxConsole 写入 fxStore.preset, 此处 watch 后应用;
+// currentPreset 仅作内部去重标记
+let currentPreset = 0
 
 // ============================================================
 //  音频分析器
@@ -1107,17 +1080,20 @@ function updateRipples(dt: number) {
 
 // ============================================================
 //  预设系统
+//  预设编号由 fxStore.preset 持有; FxConsole 写入 store,
+//  此处 watch 后调用 applyPresetToEngine 应用到引擎
 // ============================================================
-function setPreset(p: number) {
+function applyPresetToEngine(p: number, opts?: { transition?: boolean }) {
+  const useTransition = opts?.transition !== false
   p = Math.max(0, Math.min(presetList.length - 1, p))
-  const prev = fx.preset
-  if (prev === p) return
-  fx.preset = p
-  currentPreset.value = p
+  const prev = currentPreset
+  currentPreset = p
   uniforms.uPreset.value = p
 
-  // 转场效果
-  triggerPresetTransition(prev, p)
+  // 转场效果 (首次挂载时跳过)
+  if (useTransition && prev !== p) {
+    triggerPresetTransition(prev, p)
+  }
 
   // 相机基线
   const def = presetList[p]
@@ -1171,9 +1147,33 @@ function syncFxUniforms() {
   uniforms.uColorBoost.value = fx.color
   uniforms.uScatter.value = fx.scatter
   uniforms.uBgFade.value = fx.bgFade
+  uniforms.uCoverRes.value = fx.coverRes
   uniforms.uBloomStrength.value = fx.bloom ? fx.bloomStrength : 0
   if (bloomParticles) bloomParticles.visible = fx.bloom && fx.bloomStrength > 0.01
   uniforms.uEdgeEnabled.value = fx.edge ? 1 : 0
+  // 视觉染色
+  uniforms.uTintColor.value.set(fx.tintColor)
+  uniforms.uTintStrength.value = fx.tintStrength
+}
+
+// 更新染色: tintAuto 时跟随封面主色
+function updateTintFromCover() {
+  if (fx.tintAuto) {
+    const mc = player.value.coverDetail?.mainColor
+    if (mc) {
+      // rgba(r,g,b,a) -> hex
+      const m = mc.match(/rgba?\(([^)]+)\)/)
+      if (m) {
+        const parts = m[1].split(',').map((s) => parseFloat(s.trim()))
+        const toHex = (v: number) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')
+        const hex = `#${toHex(parts[0])}${toHex(parts[1])}${toHex(parts[2])}`
+        uniforms.uTintColor.value.set(hex)
+      }
+    }
+  } else {
+    uniforms.uTintColor.value.set(fx.tintColor)
+  }
+  uniforms.uTintStrength.value = fx.tintStrength
 }
 
 // ============================================================
@@ -1363,29 +1363,14 @@ function stop() {
 }
 
 // ============================================================
-//  预设栏显示/隐藏
-// ============================================================
-function showPresetBar() {
-  presetBarVisible.value = true
-  if (presetBarTimer) clearTimeout(presetBarTimer)
-  presetBarTimer = setTimeout(() => {
-    presetBarVisible.value = false
-  }, 4000)
-}
-
-// ============================================================
 //  Watch
 // ============================================================
 // 显示状态
 watch(
   () => props.show,
   (show) => {
-    if (show) {
-      start()
-      showPresetBar()
-    } else {
-      stop()
-    }
+    if (show) start()
+    else stop()
   }
 )
 
@@ -1419,6 +1404,50 @@ watch(
   }
 )
 
+// === fxStore → 引擎接线 ===
+// 预设切换 (FxConsole 写入 fxStore.preset, 此处应用转场与相机基线)
+watch(
+  () => fxStore.preset,
+  (p) => {
+    if (p === currentPreset) return
+    applyPresetToEngine(p)
+  }
+)
+
+// 运动类参数 → 直接写 uniforms
+watch(
+  () => [
+    fxStore.intensity, fxStore.depth, fxStore.point, fxStore.speed,
+    fxStore.twist, fxStore.color, fxStore.scatter, fxStore.bgFade,
+    fxStore.coverRes, fxStore.bloom, fxStore.bloomStrength,
+    fxStore.edge
+  ],
+  () => syncFxUniforms()
+)
+
+// 电影镜头开关/晃动幅度
+watch(
+  () => [fxStore.cinema, fxStore.cinemaShake],
+  () => {
+    // cinemaShake 由 animate 读取 fx.cinemaShake, 这里只需确保开关即时生效
+    if (!fxStore.cinema) {
+      camPunch = 0
+    }
+  }
+)
+
+// 视觉染色参数
+watch(
+  () => [fxStore.tintColor, fxStore.tintStrength, fxStore.tintAuto],
+  () => updateTintFromCover()
+)
+
+// 封面主色变化 (tintAuto 跟随)
+watch(
+  () => player.value.coverDetail?.mainColor,
+  () => updateTintFromCover()
+)
+
 // ============================================================
 //  生命周期
 // ============================================================
@@ -1428,6 +1457,9 @@ onMounted(() => {
   initThree()
   initParticles()
   syncFxUniforms()
+  // 应用初始预设 (无转场, 仅设置 uniforms/相机基线)
+  applyPresetToEngine(fxStore.preset, { transition: false })
+  updateTintFromCover()
   initAudio()
   loadCover(player.value.cover || undefined)
   handleResize()
@@ -1435,13 +1467,7 @@ onMounted(() => {
   resizeObserver = new ResizeObserver(() => handleResize())
   if (containerRef.value) resizeObserver.observe(containerRef.value)
 
-  if (props.show) {
-    start()
-    showPresetBar()
-  }
-
-  // 鼠标移动时显示预设栏
-  containerRef.value?.addEventListener('mousemove', showPresetBar)
+  if (props.show) start()
 })
 
 onBeforeUnmount(() => {
@@ -1449,8 +1475,6 @@ onBeforeUnmount(() => {
   stop()
   cleanupAudio()
   resizeObserver?.disconnect()
-  containerRef.value?.removeEventListener('mousemove', showPresetBar)
-  if (presetBarTimer) clearTimeout(presetBarTimer)
 
   // 清理 Three.js 资源
   if (geometry) geometry.dispose()
@@ -1496,56 +1520,5 @@ onBeforeUnmount(() => {
 
 .particle-bg-container :deep(canvas) {
   display: block;
-}
-
-.preset-switcher {
-  position: absolute;
-  bottom: 88px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  gap: 6px;
-  padding: 6px 10px;
-  background: rgba(0, 0, 0, 0.42);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-radius: 24px;
-  pointer-events: auto;
-  z-index: 10;
-  transition: opacity 0.3s ease;
-}
-
-.preset-btn {
-  padding: 6px 14px;
-  border: none;
-  border-radius: 18px;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.6);
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  white-space: nowrap;
-  font-family: inherit;
-}
-
-.preset-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.9);
-}
-
-.preset-btn.active {
-  background: rgba(255, 255, 255, 0.22);
-  color: #fff;
-  font-weight: 600;
-}
-
-.preset-fade-enter-active,
-.preset-fade-leave-active {
-  transition: opacity 0.3s ease;
-}
-
-.preset-fade-enter-from,
-.preset-fade-leave-to {
-  opacity: 0;
 }
 </style>
